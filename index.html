@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Escáner de códigos</title>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:#f4f6f8;color:#1d2939}
+header{background:#0b6bcb;color:#fff;padding:14px;text-align:center;font-size:1.2rem;font-weight:600}
+main{padding:14px;max-width:520px;margin:auto}
+.card{background:#fff;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+label{display:block;font-size:.9rem;color:#475467;margin:12px 0 4px}
+input,select,textarea{width:100%;box-sizing:border-box;font-size:1.05rem;padding:12px;border:1px solid #cfd4dc;border-radius:10px;background:#fff}
+.row{display:flex;gap:8px}
+.row input{flex:1;min-width:0}
+button{font-size:1.05rem;padding:12px 14px;border:0;border-radius:10px;background:#0b6bcb;color:#fff;font-weight:600;width:100%;margin-top:12px}
+button.sec{background:#fff;color:#0b6bcb;border:2px solid #0b6bcb}
+button.mini{width:auto;margin-top:0;white-space:nowrap}
+button:disabled{opacity:.6}
+#visor{position:fixed;inset:0;background:#000;display:none;flex-direction:column;z-index:9}
+#visor.on{display:flex}
+#visor video{flex:1;width:100%;object-fit:cover}
+#visor p{color:#fff;text-align:center;margin:10px}
+#msg{margin-top:12px;padding:12px;border-radius:10px;display:none;font-size:.98rem}
+#msg.ok{display:block;background:#ecfdf3;color:#067647}
+#msg.err{display:block;background:#fef3f2;color:#b42318}
+#msg.warn{display:block;background:#fffaeb;color:#b54708}
+</style>
+</head>
+<body>
+<header>📦 Escáner de códigos</header>
+<main>
+<div class="card">
+  <label for="tipo">Tipo</label>
+  <select id="tipo" onchange="ajustarTipo()">
+    <option value="Bodega">Bodega</option>
+    <option value="Medidor">Medidor</option>
+  </select>
+
+  <label for="codigo">Código de barras</label>
+  <div class="row">
+    <input id="codigo" inputmode="numeric" placeholder="Escanee o escriba">
+    <button class="sec mini" onclick="abrirVisor()">📷 Escanear</button>
+  </div>
+  <div id="formato" style="font-size:.85rem;color:#667085;margin-top:4px"></div>
+
+  <label id="lblCant" for="cantidad">Cantidad</label>
+  <input id="cantidad" type="number" step="any" min="0" value="1">
+
+  <label for="usuario">Usuario</label>
+  <input id="usuario" placeholder="Su nombre">
+
+  <label for="notas">Notas</label>
+  <textarea id="notas" rows="2"></textarea>
+
+  <button id="btnGuardar" onclick="guardar()">Guardar</button>
+  <div id="msg"></div>
+</div>
+
+<div class="card" id="pendientesCard" style="display:none">
+  <b>Pendientes de enviar: <span id="npend">0</span></b>
+  <button class="sec" onclick="reenviar()">Reintentar envíos</button>
+</div>
+</main>
+
+<div id="visor">
+  <video id="video" playsinline muted></video>
+  <p>Apunte la cámara al código (EAN-13 o Code 128)</p>
+  <button class="sec" style="width:auto;margin:0 auto 24px;padding:12px 24px;background:#fff" onclick="cerrarVisor()">Cerrar</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+const CONFIG = {
+  url: 'https://script.google.com/macros/s/AKfycbwIFCXvNiTfAoQ7sHPwwCXirN0InurTpVfudILZIIJdWwQb4Yrwk6dJT_-8WN_XAyrU/exec',
+  token: 'Xq7-LmR4-vT9p-Kz2w-Bn8s-2026',
+  hoja: 'Escaneos'
+};
+const $ = id => document.getElementById(id);
+
+function ajustarTipo() {
+  const medidor = $('tipo').value === 'Medidor';
+  $('lblCant').textContent = medidor ? 'Lectura actual' : 'Cantidad';
+  $('cantidad').placeholder = medidor ? 'Ej. 12345.6' : '1';
+}
+function mostrar(texto, clase) {
+  const m = $('msg');
+  m.textContent = texto;
+  m.className = clase;
+}
+
+$('usuario').value = localStorage.getItem('usuario') || '';
+ajustarTipo();
+
+/* ----- Cola de pendientes (sin conexión) ----- */
+let pend = JSON.parse(localStorage.getItem('pend') || '[]');
+function guardarPend() {
+  localStorage.setItem('pend', JSON.stringify(pend));
+  $('npend').textContent = pend.length;
+  $('pendientesCard').style.display = pend.length ? 'block' : 'none';
+}
+guardarPend();
+
+async function enviar(p) {
+  const r = await fetch(CONFIG.url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(p)
+  });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || 'respuesta no válida');
+}
+
+async function guardar() {
+  const codigo = $('codigo').value.trim();
+  const cant = $('cantidad').value.trim();
+  if (!codigo) { mostrar('Ingrese o escanee un código.', 'err'); return; }
+  if (cant === '') { mostrar('Ingrese la cantidad o la lectura.', 'err'); return; }
+  const usuario = $('usuario').value.trim();
+  localStorage.setItem('usuario', usuario);
+  const p = {
+    token: CONFIG.token,
+    hoja: CONFIG.hoja,
+    fecha: new Date().toLocaleString('es-EC'),
+    tipo: $('tipo').value,
+    codigo: codigo,
+    formato: $('formato').dataset.f || 'manual',
+    cantidad: Number(cant),
+    usuario: usuario,
+    notas: $('notas').value.trim()
+  };
+  $('btnGuardar').disabled = true;
+  try {
+    await enviar(p);
+    mostrar('✅ Guardado en la hoja.', 'ok');
+    $('codigo').value = '';
+    $('notas').value = '';
+    $('formato').textContent = '';
+    delete $('formato').dataset.f;
+  } catch (e) {
+    pend.push(p);
+    guardarPend();
+    mostrar('No se pudo enviar (' + e.message + '). Quedó guardado en el teléfono; use "Reintentar envíos".', 'warn');
+  } finally {
+    $('btnGuardar').disabled = false;
+  }
+}
+
+async function reenviar() {
+  const lista = pend.slice();
+  for (const p of lista) {
+    try { await enviar(p); pend = pend.filter(x => x !== p); } catch (e) {}
+  }
+  guardarPend();
+  mostrar(pend.length ? 'Quedan ' + pend.length + ' pendientes.' : 'Todos los pendientes se enviaron.', pend.length ? 'warn' : 'ok');
+}
+
+/* ----- Escáner con cámara (ZXing: EAN-13 y Code 128; Android e iPhone) ----- */
+let reader = null, leido = false;
+async function abrirVisor() {
+  if (typeof ZXing === 'undefined') {
+    mostrar('No se cargó el lector de códigos. Revise la conexión o escriba el código.', 'err');
+    return;
+  }
+  leido = false;
+  $('visor').classList.add('on');
+  try {
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    reader = new ZXing.BrowserMultiFormatReader(hints);
+    await reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' } } }, $('video'), (res) => {
+      if (res && !leido) {
+        const nombre = res.getBarcodeFormat() === ZXing.BarcodeFormat.EAN_13 ? 'EAN-13' : 'Code 128';
+        capturado(res.getText(), nombre);
+      }
+    });
+  } catch (e) {
+    cerrarVisor();
+    mostrar('No se pudo abrir la cámara (' + e.message + '). Revise que haya dado permiso y que la página esté en HTTPS.', 'err');
+  }
+}
+function capturado(texto, formato) {
+  leido = true;
+  $('codigo').value = texto;
+  $('formato').dataset.f = formato;
+  $('formato').textContent = 'Formato: ' + formato;
+  if (navigator.vibrate) navigator.vibrate(120);
+  cerrarVisor();
+  mostrar('Código leído. Complete los datos y guarde.', 'ok');
+}
+function cerrarVisor() {
+  if (reader) { try { reader.reset(); } catch (e) {} reader = null; }
+  $('visor').classList.remove('on');
+}
+</script>
+</body>
+</html>
