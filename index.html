@@ -65,7 +65,7 @@ button:disabled{opacity:.6}
 
 <div id="visor">
   <video id="video" playsinline muted></video>
-  <p>Apunte la cámara al código (EAN-13 o Code 128)</p>
+  <p id="estado">Apunte la cámara al código</p>
   <button class="sec" style="width:auto;margin:0 auto 24px;padding:12px 24px;background:#fff" onclick="cerrarVisor()">Cerrar</button>
 </div>
 
@@ -155,31 +155,58 @@ async function reenviar() {
   mostrar(pend.length ? 'Quedan ' + pend.length + ' pendientes.' : 'Todos los pendientes se enviaron.', pend.length ? 'warn' : 'ok');
 }
 
-/* ----- Escáner con cámara (ZXing: EAN-13 y Code 128; Android e iPhone) ----- */
-let reader = null, leido = false;
-async function abrirVisor() {
+/* ----- Escáner con cámara (librería ZXing, EAN-13 y Code 128) ----- */
+let reader = null, leido = false, timeoutCam = null;
+
+function estadoCam(texto, esError) {
+  const e = $('estado');
+  e.textContent = texto;
+  e.style.color = esError ? '#fda29b' : '#fff';
+}
+
+function abrirVisor() {
   if (typeof ZXing === 'undefined') {
-    mostrar('No se cargó el lector de códigos. Revise la conexión o escriba el código.', 'err');
+    mostrar('No se cargó el lector de códigos. Revise la conexión a internet y recargue la página.', 'err');
     return;
   }
+  cerrarVisor();
   leido = false;
   $('visor').classList.add('on');
-  try {
-    const hints = new Map();
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
-    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    reader = new ZXing.BrowserMultiFormatReader(hints);
-    await reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' } } }, $('video'), (res) => {
-      if (res && !leido) {
-        const nombre = res.getBarcodeFormat() === ZXing.BarcodeFormat.EAN_13 ? 'EAN-13' : 'Code 128';
-        capturado(res.getText(), nombre);
-      }
-    });
-  } catch (e) {
-    cerrarVisor();
-    mostrar('No se pudo abrir la cámara (' + e.message + '). Revise que haya dado permiso y que la página esté en HTTPS.', 'err');
-  }
+  estadoCam('Iniciando cámara…');
+
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  reader = new ZXing.BrowserMultiFormatReader(hints, 200);
+
+  const restricciones = {
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      advanced: [{ focusMode: 'continuous' }]
+    },
+    audio: false
+  };
+
+  timeoutCam = setTimeout(() => {
+    if ($('video').readyState < 2) {
+      estadoCam('La cámara no responde. Revise el permiso de cámara del navegador y que la página esté en HTTPS.', true);
+    }
+  }, 8000);
+
+  reader.decodeFromConstraints(restricciones, $('video'), (res) => {
+    if (res && !leido) {
+      const formato = res.getBarcodeFormat() === ZXing.BarcodeFormat.EAN_13 ? 'EAN-13' : 'Code 128';
+      capturado(res.getText(), formato);
+    }
+  }).then(() => {
+    if (!leido) estadoCam('Apunte al código (EAN-13 o Code 128) a 10–20 cm, con buena luz.');
+  }).catch((e) => {
+    estadoCam('Error de cámara: ' + (e && e.name ? e.name : '') + ' ' + (e && e.message ? e.message : e) + '. Use "Cerrar" y escriba el código.', true);
+  });
 }
+
 function capturado(texto, formato) {
   leido = true;
   $('codigo').value = texto;
@@ -189,8 +216,12 @@ function capturado(texto, formato) {
   cerrarVisor();
   mostrar('Código leído. Complete los datos y guarde.', 'ok');
 }
+
 function cerrarVisor() {
+  clearTimeout(timeoutCam);
   if (reader) { try { reader.reset(); } catch (e) {} reader = null; }
+  const v = $('video');
+  if (v.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
   $('visor').classList.remove('on');
 }
 </script>
