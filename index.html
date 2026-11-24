@@ -155,8 +155,8 @@ async function reenviar() {
   mostrar(pend.length ? 'Quedan ' + pend.length + ' pendientes.' : 'Todos los pendientes se enviaron.', pend.length ? 'warn' : 'ok');
 }
 
-/* ----- Escáner con cámara (librería ZXing, EAN-13 y Code 128) ----- */
-let reader = null, leido = false, timeoutCam = null;
+/* ----- Escáner con cámara: detector nativo si existe; si no, ZXing ----- */
+let reader = null, leido = false, timeoutCam = null, stream = null, timerDeteccion = null;
 
 function estadoCam(texto, esError) {
   const e = $('estado');
@@ -164,50 +164,79 @@ function estadoCam(texto, esError) {
   e.style.color = esError ? '#fda29b' : '#fff';
 }
 
-function abrirVisor() {
-  if (typeof ZXing === 'undefined') {
-    mostrar('No se cargó el lector de códigos. Revise la conexión a internet y recargue la página.', 'err');
-    return;
-  }
+async function abrirVisor() {
   cerrarVisor();
   leido = false;
   $('visor').classList.add('on');
   estadoCam('Iniciando cámara…');
 
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+  } catch (e) {
+    estadoCam('No se pudo abrir la cámara (' + (e.name || 'error') + '). Revise el permiso de cámara y que la página esté en HTTPS.', true);
+    return;
+  }
+
+  const v = $('video');
+  v.srcObject = stream;
+  await v.play().catch(() => {});
+
+  // Enfoque continuo (en los teléfonos que lo soportan)
+  try { await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+
+  timeoutCam = setTimeout(() => {
+    if (!leido && v.readyState < 2) estadoCam('La cámara no muestra imagen. Revise el permiso de cámara del navegador.', true);
+  }, 8000);
+
+  if ('BarcodeDetector' in window) {
+    iniciarDetectorNativo(v);
+  } else {
+    iniciarZXing(v);
+  }
+  estadoCam('Apunte al código (EAN-13 o Code 128) a 10–20 cm, con buena luz.');
+}
+
+function iniciarDetectorNativo(v) {
+  const detector = new BarcodeDetector({ formats: ['ean_13', 'code_128'] });
+  let ocupado = false;
+  timerDeteccion = setInterval(async () => {
+    if (leido || ocupado || v.readyState < 2) return;
+    ocupado = true;
+    try {
+      const codigos = await detector.detect(v);
+      if (codigos.length && !leido) {
+        const f = codigos[0].format === 'ean_13' ? 'EAN-13' : 'Code 128';
+        capturado(codigos[0].rawValue, f);
+      }
+    } catch (e) {}
+    ocupado = false;
+  }, 150);
+}
+
+function iniciarZXing(v) {
+  if (typeof ZXing === 'undefined') {
+    estadoCam('No se cargó el lector de códigos. Revise la conexión y recargue la página.', true);
+    return;
+  }
   const hints = new Map();
   hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
   hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-  reader = new ZXing.BrowserMultiFormatReader(hints, 200);
-
-  const restricciones = {
-    video: {
-      facingMode: { ideal: 'environment' },
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      advanced: [{ focusMode: 'continuous' }]
-    },
-    audio: false
-  };
-
-  timeoutCam = setTimeout(() => {
-    if ($('video').readyState < 2) {
-      estadoCam('La cámara no responde. Revise el permiso de cámara del navegador y que la página esté en HTTPS.', true);
-    }
-  }, 8000);
-
-  reader.decodeFromConstraints(restricciones, $('video'), (res) => {
+  reader = new ZXing.BrowserMultiFormatReader(hints, 150);
+  reader.decodeFromVideoElement(v, (res) => {
     if (res && !leido) {
-      const formato = res.getBarcodeFormat() === ZXing.BarcodeFormat.EAN_13 ? 'EAN-13' : 'Code 128';
-      capturado(res.getText(), formato);
+      const f = res.getBarcodeFormat() === ZXing.BarcodeFormat.EAN_13 ? 'EAN-13' : 'Code 128';
+      capturado(res.getText(), f);
     }
-  }).then(() => {
-    if (!leido) estadoCam('Apunte al código (EAN-13 o Code 128) a 10–20 cm, con buena luz.');
   }).catch((e) => {
-    estadoCam('Error de cámara: ' + (e && e.name ? e.name : '') + ' ' + (e && e.message ? e.message : e) + '. Use "Cerrar" y escriba el código.', true);
+    estadoCam('Error al leer la cámara: ' + (e && e.message ? e.message : e), true);
   });
 }
 
 function capturado(texto, formato) {
+  if (leido) return;
   leido = true;
   $('codigo').value = texto;
   $('formato').dataset.f = formato;
@@ -219,9 +248,12 @@ function capturado(texto, formato) {
 
 function cerrarVisor() {
   clearTimeout(timeoutCam);
+  clearInterval(timerDeteccion);
+  timerDeteccion = null;
   if (reader) { try { reader.reset(); } catch (e) {} reader = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   const v = $('video');
-  if (v.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
+  v.srcObject = null;
   $('visor').classList.remove('on');
 }
 </script>
